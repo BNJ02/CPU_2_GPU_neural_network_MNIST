@@ -1,0 +1,4 @@
+# Ignore les fichiers sans point
+[^.]*
+
+*.out

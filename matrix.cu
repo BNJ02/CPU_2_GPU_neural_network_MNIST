@@ -87,27 +87,49 @@ void matrix_minus(matrix_t *m1, matrix_t *m2, matrix_t *res)
     }
 }
 
+__global__
+void matrix_dot_kernel(const double *A, const double *B, double *C,
+                       int A_rows, int A_cols, int B_cols)
+{
+    int row = blockIdx.y * blockDim.y + threadIdx.y; // ligne de A
+    int col = blockIdx.x * blockDim.x + threadIdx.x; // colonne de B
+
+    if (row < A_rows && col < B_cols) {
+        double acc = 0.0;
+        for (int k = 0; k < A_cols; ++k) {
+            acc += A[row * A_cols + k] * B[k * B_cols + col];
+        }
+        C[row * B_cols + col] = acc;
+    }
+}
+
 void matrix_dot(matrix_t *m1, matrix_t *m2, matrix_t *res)
 {
     assert ( (m1->columns == m2->rows)  &&
              (m1->rows == res->rows)    &&
              (m2->columns == res->columns));
+    
+    double *d_m1, *d_m2, *d_res;
+    int size_m1 = m1->rows * m1->columns * sizeof(double);
+    int size_m2 = m2->rows * m2->columns * sizeof(double);
+    int size_res = res->rows * res->columns * sizeof(double);
 
-    for (int row = 0; row < m1->rows; row ++)
-    {
-        for (int col = 0; col < m2->columns; col ++)
-        {
-            int idx = col + row * m2->columns;
-            double var = 0.0;
+    cudaMalloc(&d_m1, size_m1);
+    cudaMalloc(&d_m2, size_m2);
+    cudaMalloc(&d_res, size_res);
 
-            for (int ii = 0; ii < m1->columns; ii++)
-            {
-                var += m1->m[ii + row * m1->columns] * m2->m[col + ii * m2->columns];
-            }
+    cudaMemcpy(d_m1, m1->m, size_m1, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_m2, m2->m, size_m2, cudaMemcpyHostToDevice);
 
-            res->m[idx] = var;
-        }
-    }
+    dim3 blockDim(16, 16);
+    dim3 gridDim((m2->columns + 15) / 16, (m1->rows + 15) / 16);
+
+    matrix_dot_kernel<<<gridDim, blockDim>>>(d_m1, d_m2, d_res,
+                                             m1->rows, m1->columns, m2->columns);
+
+    cudaMemcpy(res->m, d_res, size_res, cudaMemcpyDeviceToHost);
+
+    cudaFree(d_m1); cudaFree(d_m2); cudaFree(d_res);
 }
 
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
