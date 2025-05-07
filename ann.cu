@@ -164,6 +164,7 @@ void forward(ann_t *nn) {
         matrix_sum(z1[l], z2[l], nn->layers[l]->z);
         matrix_function(nn->layers[l]->z, nn->layers[l]->activations, false);
     }
+    cudaDeviceSynchronize();
 }
  
  
@@ -258,6 +259,7 @@ void backward(ann_t *nn, matrix_t *y)
             hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
         }
     }
+    cudaDeviceSynchronize();
 }
 
  
