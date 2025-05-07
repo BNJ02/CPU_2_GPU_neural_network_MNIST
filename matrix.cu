@@ -58,6 +58,14 @@ void print_matrix(matrix_t *m, bool is_short){
     if (is_short && lim_rows != m->rows) printf("...\n");
 }
 
+__global__
+void hadamard_product_kernel(double* m1, double* m2, double* res, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        res[idx] = m1[idx] * m2[idx];
+    }
+}
+
 void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
 {
     assert ( (m1->columns == m2->columns)   &&
@@ -65,9 +73,18 @@ void hadamard_product(matrix_t *m1, matrix_t *m2, matrix_t *res)
              (m1->rows == m2->rows)         &&
              (m1->rows == res->rows));
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    {
-            res->m[idx] = m1->m[idx] * m2->m[idx];
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    hadamard_product_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, m2->m, res->m, size);
+    cudaDeviceSynchronize();
+}
+
+__global__
+void matrix_sum_kernel(double* m1, double* m2, double* res, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        res[idx] = m1[idx] + m2[idx];
     }
 }
 
@@ -78,9 +95,18 @@ void matrix_sum(matrix_t *m1, matrix_t *m2, matrix_t *res)
              (m1->rows == m2->rows)        &&
              (m1->rows == res->rows));
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    { 
-        res->m[idx] = m1->m[idx] + m2->m[idx];
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    matrix_sum_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, m2->m, res->m, size);
+    cudaDeviceSynchronize();
+}
+
+__global__
+void matrix_minus_kernel(double* m1, double* m2, double* res, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        res[idx] = m1[idx] - m2[idx];
     }
 }
 
@@ -91,10 +117,11 @@ void matrix_minus(matrix_t *m1, matrix_t *m2, matrix_t *res)
              (m1->rows == m2->rows)        &&
              (m1->rows == res->rows));
              
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    {
-        res->m[idx] = m1->m[idx] - m2->m[idx];
-    }
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    matrix_minus_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, m2->m, res->m, size);
+    cudaDeviceSynchronize();
 }
 
 __global__
@@ -128,15 +155,28 @@ void matrix_dot(matrix_t *m1, matrix_t *m2, matrix_t *res)
     cudaDeviceSynchronize(); // attendre que le résultat soit prêt
 }
 
+__device__ double sigmoid_device(double x) {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+__global__
+void matrix_sigmoid_kernel(double* m, double* res, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        res[idx] = sigmoid_device(m[idx]);
+    }
+}
+
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
 {
     assert ( (m1->columns == res->columns) &&             
              (m1->rows == res->rows));
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
-    {
-        res->m[idx] = f(m1->m[idx]);
-    }
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    matrix_sigmoid_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, res->m, size);
+    cudaDeviceSynchronize();
 }
 
 void matrix_transpose(matrix_t *m1, matrix_t *res)
@@ -153,15 +193,24 @@ void matrix_transpose(matrix_t *m1, matrix_t *res)
     }
 }
 
+__global__
+void matrix_scalar_kernel(double* m, double scalar, double* res, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        res[idx] = m[idx] * scalar;
+    }
+}
+
 void matrix_scalar(matrix_t *m1, double s, matrix_t *res)
 {
     assert ( (m1->rows == res->rows) &&             
              (m1->columns == res->columns));
 
-    for (int idx = 0; idx < m1->columns*m1->rows; idx ++)
-    {
-        res->m[idx] = m1->m[idx] * s;
-    }
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    matrix_scalar_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, s, res->m, size);
+    cudaDeviceSynchronize();
 }
 
 void matrix_memcpy(matrix_t *dest, const matrix_t *src)
