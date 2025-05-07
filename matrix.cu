@@ -191,28 +191,15 @@ void matrix_dot(matrix_t* m1, matrix_t* m2, matrix_t* res)
     cudaDeviceSynchronize();       // indispensable avec la mémoire unifiée :contentReference[oaicite:5]{index=5}
 }
 
-__device__ double sigmoid_device(double x) {
-    return 1.0 / (1.0 + exp(-x));
-}
-
-__global__
-void matrix_sigmoid_kernel(double* m, double* res, int size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        res[idx] = sigmoid_device(m[idx]);
-    }
-}
-
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
 {
     assert ( (m1->columns == res->columns) &&             
              (m1->rows == res->rows));
 
-    int size = m1->rows * m1->columns;
-    int threadsPerBlock = 256;
-    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
-    matrix_sigmoid_kernel<<<blocksPerGrid, threadsPerBlock>>>(m1->m, res->m, size);
-    cudaDeviceSynchronize();
+    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
+    {
+        res->m[idx] = f(m1->m[idx]);
+    }
 }
 
 void matrix_transpose(matrix_t *m1, matrix_t *res)
