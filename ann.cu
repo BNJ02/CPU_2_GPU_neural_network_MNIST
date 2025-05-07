@@ -173,7 +173,6 @@ void forward(ann_t *nn) {
 *   ‑ persistent scratch:
 *       tw[l]        : transposed weights / grad_w
 *       delta_tmp[l] : temporary δ before Hadamard
-*       dfz[l]       : f'(z_{l})
 *       b1[l]        : grad_b
 *       one          : vector of 1 for bias reduction
 * ============================================================================
@@ -184,7 +183,7 @@ void backward(ann_t *nn, matrix_t *y)
 
     /* persistent scratch ---------------------------------------------------- */
     static matrix_t **tw = nullptr, **delta_tmp = nullptr,
-            **dfz = nullptr, **w1 = nullptr, **ta = nullptr,
+            **w1 = nullptr, **ta = nullptr,
             **b1 = nullptr;                    // ∇b
     static matrix_t  *one2 = nullptr;                  // m × 1 (bias reduce)
     static unsigned   lay_cached = 0, mb_cached = 0;
@@ -195,12 +194,12 @@ void backward(ann_t *nn, matrix_t *y)
         if (tw) {
             for (unsigned l = 1; l < lay_cached; ++l) {
                 destroy_matrix(tw[l]); destroy_matrix(delta_tmp[l]);
-                destroy_matrix(dfz[l]); destroy_matrix(w1[l]);
-                destroy_matrix(ta[l]); destroy_matrix(b1[l]);
+                destroy_matrix(w1[l]); destroy_matrix(ta[l]); 
+                destroy_matrix(b1[l]);
             }
 
-            free(tw); free(delta_tmp); free(dfz);
-            free(w1); free(ta); free(b1); destroy_matrix(one2);
+            free(tw); free(delta_tmp); free(w1); 
+            free(ta); free(b1); destroy_matrix(one2);
         }
 
         lay_cached = nn->number_of_layers;
@@ -208,7 +207,6 @@ void backward(ann_t *nn, matrix_t *y)
 
         tw        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
         delta_tmp = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
-        dfz       = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
         w1        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
         ta        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
         b1        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
@@ -216,45 +214,32 @@ void backward(ann_t *nn, matrix_t *y)
         for (unsigned l = 1; l < lay_cached; ++l) {
             tw[l]        = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->layers[l]->number_of_neurons);
             delta_tmp[l] = alloc_matrix(nn->layers[l-1]->number_of_neurons, mb_cached);
-            dfz[l]       = alloc_matrix(nn->layers[l]->number_of_neurons, mb_cached);
             w1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons, nn->layers[l-1]->number_of_neurons);
             ta[l]        = alloc_matrix(mb_cached, nn->layers[l-1]->number_of_neurons);
             b1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
         }
-        /* dfz[0] never used but keep consistent for simplicity */
-        dfz[0] = alloc_matrix(nn->layers[0]->number_of_neurons, mb_cached);
-
+        
         one2 = alloc_matrix(mb_cached, 1);
         for (unsigned i = 0; i < one2->rows * one2->columns; ++i) one2->m[i] = 1.0;
     }
 
     /* --- δ^L -------------------------------------------------------------- */
     matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta); // deltaL = aL − y
-    // matrix_function(nn->layers[L]->z, dfz[L], true);
-    // hadamard_product(nn->layers[L]->delta, dfz[L], nn->layers[L]->delta);
     matrix_function_hadamard(nn->layers[L]->activations, nn->layers[L]->delta, nn->layers[L]->delta); // deltaL *= dsigmoid(aL)
 
     /* --- layers L .. 1 ---------------------------------------------------- */
     for (int l = L; l > 0; --l) {
         /* ∇Wᶫ : delta^l × (a^{l-1})ᵀ   ------------------------------------ */
         matrix_transpose(nn->layers[l-1]->activations, ta[l]);
-        // matrix_dot(nn->layers[l]->delta, ta[l], w1[l]);
-        // matrix_scalar(w1[l], nn->alpha / mb_cached, w1[l]);
-        // matrix_minus(nn->layers[l]->weights, w1[l], nn->layers[l]->weights);
         matrix_dot_scalar_minus(nn->layers[l]->delta, ta[l], nn->alpha / mb_cached, nn->layers[l]->weights);
 
         /* ∇bᶫ : delta^l × 1 ---------------------------------------------- */
-        // matrix_dot(nn->layers[l]->delta, one2, b1[l]);
-        // matrix_scalar(b1[l], nn->alpha / mb_cached, b1[l]);
-        // matrix_minus(nn->layers[l]->biases, b1[l], nn->layers[l]->biases);
         matrix_dot_scalar_minus(nn->layers[l]->delta, one2, nn->alpha / mb_cached, nn->layers[l]->biases);
 
         if (l > 1) {
             /* δ^{l-1} ------------------------------------------------------ */
             matrix_transpose(nn->layers[l]->weights, tw[l]);
             matrix_dot(tw[l], nn->layers[l]->delta, delta_tmp[l]);
-            // matrix_function(nn->layers[l-1]->z, dfz[l-1], true);
-            // hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
             matrix_function_hadamard(nn->layers[l-1]->activations, delta_tmp[l], nn->layers[l-1]->delta);
         }
     }
