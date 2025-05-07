@@ -34,4 +34,8 @@ void matrix_scalar(matrix_t *m1, double s, matrix_t *res);
 
 void matrix_memcpy(matrix_t *dest, const matrix_t *src);
 
+void matrix_function_hadamard(matrix_t* m1, matrix_t* m2, matrix_t* res);
+
+void matrix_dot_scalar_minus(matrix_t* A, matrix_t* B, double scalar, matrix_t* C);
+
 #endif

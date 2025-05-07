@@ -214,16 +214,11 @@ void backward(ann_t *nn, matrix_t *y)
         b1        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
 
         for (unsigned l = 1; l < lay_cached; ++l) {
-            tw[l]        = alloc_matrix(nn->layers[l-1]->number_of_neurons,
-                                        nn->layers[l]->number_of_neurons);
-            delta_tmp[l] = alloc_matrix(nn->layers[l-1]->number_of_neurons,
-                                        mb_cached);
-            dfz[l]       = alloc_matrix(nn->layers[l]->number_of_neurons,
-                                        mb_cached);
-            w1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons,
-                                        nn->layers[l-1]->number_of_neurons);
-            ta[l]        = alloc_matrix(mb_cached,
-                                        nn->layers[l-1]->number_of_neurons);
+            tw[l]        = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->layers[l]->number_of_neurons);
+            delta_tmp[l] = alloc_matrix(nn->layers[l-1]->number_of_neurons, mb_cached);
+            dfz[l]       = alloc_matrix(nn->layers[l]->number_of_neurons, mb_cached);
+            w1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons, nn->layers[l-1]->number_of_neurons);
+            ta[l]        = alloc_matrix(mb_cached, nn->layers[l-1]->number_of_neurons);
             b1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
         }
         /* dfz[0] never used but keep consistent for simplicity */
@@ -234,29 +229,33 @@ void backward(ann_t *nn, matrix_t *y)
     }
 
     /* --- δ^L -------------------------------------------------------------- */
-    matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta);
-    matrix_function(nn->layers[L]->z, dfz[L], true);
-    hadamard_product(nn->layers[L]->delta, dfz[L], nn->layers[L]->delta);
+    matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta); // deltaL = aL − y
+    // matrix_function(nn->layers[L]->z, dfz[L], true);
+    // hadamard_product(nn->layers[L]->delta, dfz[L], nn->layers[L]->delta);
+    matrix_function_hadamard(nn->layers[L]->activations, nn->layers[L]->delta, nn->layers[L]->delta); // deltaL *= dsigmoid(aL)
 
     /* --- layers L .. 1 ---------------------------------------------------- */
     for (int l = L; l > 0; --l) {
         /* ∇Wᶫ : delta^l × (a^{l-1})ᵀ   ------------------------------------ */
         matrix_transpose(nn->layers[l-1]->activations, ta[l]);
-        matrix_dot(nn->layers[l]->delta, ta[l], w1[l]);
-        matrix_scalar(w1[l], nn->alpha / mb_cached, w1[l]);
-        matrix_minus(nn->layers[l]->weights, w1[l], nn->layers[l]->weights);
+        // matrix_dot(nn->layers[l]->delta, ta[l], w1[l]);
+        // matrix_scalar(w1[l], nn->alpha / mb_cached, w1[l]);
+        // matrix_minus(nn->layers[l]->weights, w1[l], nn->layers[l]->weights);
+        matrix_dot_scalar_minus(nn->layers[l]->delta, ta[l], nn->alpha / mb_cached, nn->layers[l]->weights);
 
         /* ∇bᶫ : delta^l × 1 ---------------------------------------------- */
-        matrix_dot(nn->layers[l]->delta, one2, b1[l]);
-        matrix_scalar(b1[l], nn->alpha / mb_cached, b1[l]);
-        matrix_minus(nn->layers[l]->biases, b1[l], nn->layers[l]->biases);
+        // matrix_dot(nn->layers[l]->delta, one2, b1[l]);
+        // matrix_scalar(b1[l], nn->alpha / mb_cached, b1[l]);
+        // matrix_minus(nn->layers[l]->biases, b1[l], nn->layers[l]->biases);
+        matrix_dot_scalar_minus(nn->layers[l]->delta, one2, nn->alpha / mb_cached, nn->layers[l]->biases);
 
         if (l > 1) {
             /* δ^{l-1} ------------------------------------------------------ */
             matrix_transpose(nn->layers[l]->weights, tw[l]);
             matrix_dot(tw[l], nn->layers[l]->delta, delta_tmp[l]);
-            matrix_function(nn->layers[l-1]->z, dfz[l-1], true);
-            hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
+            // matrix_function(nn->layers[l-1]->z, dfz[l-1], true);
+            // hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
+            matrix_function_hadamard(nn->layers[l-1]->activations, delta_tmp[l], nn->layers[l-1]->delta);
         }
     }
     cudaDeviceSynchronize();

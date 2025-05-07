@@ -198,6 +198,11 @@ double dsigmoid(double x)
     return sigmoid(x) * (1.0 - sigmoid(x));
 }
 
+// Corrigé : dérivée de sigmoid supposant que x = sigmoid(x)
+__device__ double dsigmoid_from_sigmoid(double y) {
+    return y * (1.0 - y);
+}
+
 __global__
 void matrix_function_kernel(double* in, double* out, int size, bool derivative)
 {
@@ -275,4 +280,50 @@ void matrix_memcpy(matrix_t *dest, const matrix_t *src)
              (dest->columns == src->columns));
 
     memcpy(dest->m, src->m, src->columns * src->rows * sizeof(double));     
+}
+
+__global__
+void fused_function_hadamard(double* in, double* other, double* out, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        double y = in[idx]; // in[idx] est déjà sigmoid(x)
+        out[idx] = dsigmoid_from_sigmoid(y) * other[idx]; // corrigé ici
+    }
+}
+
+void matrix_function_hadamard(matrix_t* m1, matrix_t* m2, matrix_t* res) {
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+
+    fused_function_hadamard<<<blocksPerGrid, threadsPerBlock>>>(
+        m1->m, m2->m, res->m, size);
+}
+
+__global__
+void fused_dot_scalar_minus(const double* A, const double* B, double* C,
+                             double scalar, int A_rows, int A_cols, int B_cols) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < A_rows && col < B_cols) {
+        double acc = 0.0;
+        for (int k = 0; k < A_cols; ++k) {
+            acc += A[row * A_cols + k] * B[k * B_cols + col];
+        }
+        C[row * B_cols + col] -= scalar * acc;
+    }
+}
+
+void matrix_dot_scalar_minus(matrix_t* A, matrix_t* B, double scalar, matrix_t* C) {
+    assert(A->columns == B->rows);
+    assert(A->rows == C->rows);
+    assert(B->columns == C->columns);
+
+    dim3 blockDim(16, 16);
+    dim3 gridDim((C->columns + 15) / 16, (C->rows + 15) / 16);
+
+    fused_dot_scalar_minus<<<gridDim, blockDim>>>(
+        A->m, B->m, C->m, scalar,
+        A->rows, A->columns, B->columns);
 }
