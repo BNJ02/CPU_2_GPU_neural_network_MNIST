@@ -6,6 +6,8 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
+#define TILE_SIZE 16
+
 matrix_t * alloc_matrix(unsigned rows, unsigned columns)
 {
     matrix_t * res = (matrix_t*) malloc( sizeof(matrix_t) );
@@ -125,34 +127,68 @@ void matrix_minus(matrix_t *m1, matrix_t *m2, matrix_t *res)
 }
 
 __global__
-void matrix_dot_kernel(const double *A, const double *B, double *C,
-                       int A_rows, int A_cols, int B_cols)
+void matrix_dot_kernel(const double* __restrict__ A,
+                      const double* __restrict__ B,
+                      double* C,
+                      int A_rows, int A_cols, int B_cols)
 {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ double tileA[TILE_SIZE][TILE_SIZE];
+    __shared__ double tileB[TILE_SIZE][TILE_SIZE];
 
-    if (row < A_rows && col < B_cols) {
-        double acc = 0.0;
-        for (int k = 0; k < A_cols; ++k) {
-            acc += A[row * A_cols + k] * B[k * B_cols + col];
-        }
-        C[row * B_cols + col] = acc;
+    int row = blockIdx.y * TILE_SIZE + threadIdx.y;
+    int col = blockIdx.x * TILE_SIZE + threadIdx.x;
+
+    double acc = 0.0;
+
+    /* balayage de la dimension k par tuiles */
+    for (int t = 0; t < (A_cols + TILE_SIZE - 1) / TILE_SIZE; ++t) {
+
+        /* chargement collaboratif dans la SM (tests de bord ⇒ 0.0) */
+        int kA = t * TILE_SIZE + threadIdx.x;
+        int kB = t * TILE_SIZE + threadIdx.y;
+
+        tileA[threadIdx.y][threadIdx.x] =
+            (row < A_rows && kA < A_cols) ? A[row * A_cols + kA] : 0.0;
+
+        tileB[threadIdx.y][threadIdx.x] =
+            (kB < A_cols && col < B_cols) ? B[kB * B_cols + col] : 0.0;
+
+        __syncthreads();                                   // barrière :contentReference[oaicite:1]{index=1}
+
+        /* produit interne local à la tuile */
+        #pragma unroll
+        for (int k = 0; k < TILE_SIZE; ++k)
+            acc += tileA[threadIdx.y][k] * tileB[k][threadIdx.x];
+
+        __syncthreads();                                   // ré-utilisation des buffers
     }
+
+    if (row < A_rows && col < B_cols)
+        C[row * B_cols + col] = acc;
 }
 
-void matrix_dot(matrix_t *m1, matrix_t *m2, matrix_t *res)
+void matrix_dot(matrix_t* m1, matrix_t* m2, matrix_t* res)
 {
-    assert((m1->columns == m2->rows) &&
-           (m1->rows == res->rows) &&
-           (m2->columns == res->columns));
+    assert(m1->columns == m2->rows &&
+           m1->rows    == res->rows &&
+           m2->columns == res->columns);
 
-    dim3 blockDim(16, 16);
-    dim3 gridDim((m2->columns + 15) / 16, (m1->rows + 15) / 16);
+    /* dimensions de la grille */
+    dim3 blockDim(TILE_SIZE, TILE_SIZE);
+    dim3 gridDim((res->columns + TILE_SIZE - 1) / TILE_SIZE,
+                 (res->rows    + TILE_SIZE - 1) / TILE_SIZE);
 
-    matrix_dot_kernel<<<gridDim, blockDim>>>(m1->m, m2->m, res->m,
+    /* (optionnel) préfetch vers le GPU pour abaisser la latence */
+    int dev;  cudaGetDevice(&dev);
+    cudaMemPrefetchAsync(m1->m, m1->rows * m1->columns * sizeof(double), dev);
+    cudaMemPrefetchAsync(m2->m, m2->rows * m2->columns * sizeof(double), dev);
+    cudaMemPrefetchAsync(res->m, res->rows * res->columns * sizeof(double), dev);
+
+    matrix_dot_kernel<<<gridDim, blockDim>>>(
+        m1->m, m2->m, res->m,
         m1->rows, m1->columns, m2->columns);
 
-    cudaDeviceSynchronize(); // attendre que le résultat soit prêt
+    cudaDeviceSynchronize();       // indispensable avec la mémoire unifiée :contentReference[oaicite:5]{index=5}
 }
 
 __device__ double sigmoid_device(double x) {
