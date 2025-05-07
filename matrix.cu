@@ -1,6 +1,7 @@
 #include "matrix.h"
 #include <stdlib.h>
 #include <string.h>
+#include <cuda_runtime.h>  
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -8,16 +9,25 @@
 matrix_t * alloc_matrix(unsigned rows, unsigned columns)
 {
     matrix_t * res = (matrix_t*) malloc( sizeof(matrix_t) );
-    res->m = (double *) calloc(columns * rows, sizeof(double));
+    // res->m = (double *) calloc(columns * rows, sizeof(double));
     res->columns = columns;
     res->rows = rows;
+
+    size_t size = rows * columns * sizeof(double);
+    cudaMallocManaged(&res->m, size);       // allocation unifiée
+    // cudaMemset(res->m, 0, size);            // initialise à zéro (comme calloc)
+    // for(int i = 0; i < size; ++i) {
+    //     m[i] = 0;
+    // }
+
     return res;
 }
 
 void destroy_matrix(matrix_t *m)
 {
     //printf("free %p %p\n", m, m->m);
-    free(m->m);
+    cudaFree(m->m);
+    // free(m->m);
     free(m);
 }
 
@@ -91,8 +101,8 @@ __global__
 void matrix_dot_kernel(const double *A, const double *B, double *C,
                        int A_rows, int A_cols, int B_cols)
 {
-    int row = blockIdx.y * blockDim.y + threadIdx.y; // ligne de A
-    int col = blockIdx.x * blockDim.x + threadIdx.x; // colonne de B
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (row < A_rows && col < B_cols) {
         double acc = 0.0;
@@ -105,31 +115,17 @@ void matrix_dot_kernel(const double *A, const double *B, double *C,
 
 void matrix_dot(matrix_t *m1, matrix_t *m2, matrix_t *res)
 {
-    assert ( (m1->columns == m2->rows)  &&
-             (m1->rows == res->rows)    &&
-             (m2->columns == res->columns));
-    
-    double *d_m1, *d_m2, *d_res;
-    int size_m1 = m1->rows * m1->columns * sizeof(double);
-    int size_m2 = m2->rows * m2->columns * sizeof(double);
-    int size_res = res->rows * res->columns * sizeof(double);
-
-    cudaMalloc(&d_m1, size_m1);
-    cudaMalloc(&d_m2, size_m2);
-    cudaMalloc(&d_res, size_res);
-
-    cudaMemcpy(d_m1, m1->m, size_m1, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_m2, m2->m, size_m2, cudaMemcpyHostToDevice);
+    assert((m1->columns == m2->rows) &&
+           (m1->rows == res->rows) &&
+           (m2->columns == res->columns));
 
     dim3 blockDim(16, 16);
     dim3 gridDim((m2->columns + 15) / 16, (m1->rows + 15) / 16);
 
-    matrix_dot_kernel<<<gridDim, blockDim>>>(d_m1, d_m2, d_res,
-                                             m1->rows, m1->columns, m2->columns);
+    matrix_dot_kernel<<<gridDim, blockDim>>>(m1->m, m2->m, res->m,
+        m1->rows, m1->columns, m2->columns);
 
-    cudaMemcpy(res->m, d_res, size_res, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_m1); cudaFree(d_m2); cudaFree(d_res);
+    cudaDeviceSynchronize(); // attendre que le résultat soit prêt
 }
 
 void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
