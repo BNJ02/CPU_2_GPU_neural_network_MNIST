@@ -117,82 +117,147 @@ void print_nn(ann_t *nn)
     }
 }
 
-void forward(ann_t *nn, double (*activation_function)(double))
-{
-    for (int l = 1; l < nn->number_of_layers; l++)
+/* ============================================================================
+* Forward propagation
+*   ‑ persistent scratch:
+*       z1[l]  : W_l * a_{l‑1}
+*       z2[l]  : b_l * 1
+*       one    : vector of 1 used for bias broadcast
+* ============================================================================
+*/
+void forward(ann_t *nn, double (*act)(double)) {
+    /* persistent scratch : one, z1, z2 ------------------------------------ */
+    static matrix_t **z1 = nullptr, **z2 = nullptr;
+    static matrix_t  *one1 = nullptr;            // 1 × m (bias broadcast)
+    static unsigned   lay_cached = 0, mb_cached = 0;
+
+    if (lay_cached != nn->number_of_layers || mb_cached != nn->minibatch_size)
     {
-        matrix_t *z1 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->minibatch_size);
-        matrix_t *z2 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->minibatch_size);
-        matrix_t *one = alloc_matrix(1, nn->minibatch_size);
-        for (int idx = 0; idx < one->columns*one->rows; idx++)
-            one->m[idx] = 1.0;
+        /* free previous */
+        if (z1)
+        {
+            for (unsigned l = 1; l < lay_cached; ++l) {
+                destroy_matrix(z1[l]);
+                destroy_matrix(z2[l]);
+            }
+            free(z1); free(z2); destroy_matrix(one1);
+        }
 
-        matrix_dot(nn->layers[l]->weights, nn->layers[l-1]->activations, z1); // z1 <- w^l x a^(l-1)
-        matrix_dot(nn->layers[l]->biases, one, z2); // z2 <- b^l x 1        
-        matrix_sum(z1, z2, nn->layers[l]->z); // z^l <- z1 + z2 <=> z^l <- w^l x a^(l-1) + b^l x 1      
+        lay_cached = nn->number_of_layers;
+        mb_cached  = nn->minibatch_size;
 
-        matrix_function(nn->layers[l]->z, activation_function, nn->layers[l]->activations); // a^l = f(z^l)
-     
-        destroy_matrix(z1);
-        destroy_matrix(z2);
-        destroy_matrix(one);
+        z1  = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        z2  = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+
+        for (unsigned l = 1; l < lay_cached; ++l) {
+            z1[l] = alloc_matrix(nn->layers[l]->number_of_neurons, mb_cached);
+            z2[l] = alloc_matrix(nn->layers[l]->number_of_neurons, mb_cached);
+        }
+        one1 = alloc_matrix(1, mb_cached);
+        for (unsigned i = 0; i < one1->rows * one1->columns; ++i) one1->m[i] = 1.0;
+    }
+
+    /* actual propagation --------------------------------------------------- */
+    for (unsigned l = 1; l < nn->number_of_layers; ++l) {
+        matrix_dot(nn->layers[l]->weights, nn->layers[l-1]->activations, z1[l]);
+        matrix_dot(nn->layers[l]->biases,  one1,                         z2[l]);
+        matrix_sum(z1[l], z2[l], nn->layers[l]->z);
+        matrix_function(nn->layers[l]->z, act, nn->layers[l]->activations);
+    }
+}
+ 
+ 
+/* ============================================================================
+* Back‑propagation
+*   ‑ persistent scratch:
+*       tw[l]        : transposed weights / grad_w
+*       delta_tmp[l] : temporary δ before Hadamard
+*       dfz[l]       : f'(z_{l})
+*       b1[l]        : grad_b
+*       one          : vector of 1 for bias reduction
+* ============================================================================
+*/
+void backward(ann_t *nn, matrix_t *y, double (*df)(double))
+{
+    const unsigned L = nn->number_of_layers - 1;
+
+    /* persistent scratch ---------------------------------------------------- */
+    static matrix_t **tw = nullptr, **delta_tmp = nullptr,
+            **dfz = nullptr, **w1 = nullptr, **ta = nullptr,
+            **b1 = nullptr;                    // ∇b
+    static matrix_t  *one2 = nullptr;                  // m × 1 (bias reduce)
+    static unsigned   lay_cached = 0, mb_cached = 0;
+
+    if (lay_cached != nn->number_of_layers || mb_cached != nn->minibatch_size)
+    {
+        /* free previous */
+        if (tw) {
+            for (unsigned l = 1; l < lay_cached; ++l) {
+                destroy_matrix(tw[l]); destroy_matrix(delta_tmp[l]);
+                destroy_matrix(dfz[l]); destroy_matrix(w1[l]);
+                destroy_matrix(ta[l]); destroy_matrix(b1[l]);
+            }
+
+            free(tw); free(delta_tmp); free(dfz);
+            free(w1); free(ta); free(b1); destroy_matrix(one2);
+        }
+
+        lay_cached = nn->number_of_layers;
+        mb_cached  = nn->minibatch_size;
+
+        tw        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        delta_tmp = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        dfz       = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        w1        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        ta        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+        b1        = (matrix_t**)malloc(lay_cached * sizeof(matrix_t*));
+
+        for (unsigned l = 1; l < lay_cached; ++l) {
+            tw[l]        = alloc_matrix(nn->layers[l-1]->number_of_neurons,
+                                        nn->layers[l]->number_of_neurons);
+            delta_tmp[l] = alloc_matrix(nn->layers[l-1]->number_of_neurons,
+                                        mb_cached);
+            dfz[l]       = alloc_matrix(nn->layers[l]->number_of_neurons,
+                                        mb_cached);
+            w1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons,
+                                        nn->layers[l-1]->number_of_neurons);
+            ta[l]        = alloc_matrix(mb_cached,
+                                        nn->layers[l-1]->number_of_neurons);
+            b1[l]        = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
+        }
+        /* dfz[0] never used but keep consistent for simplicity */
+        dfz[0] = alloc_matrix(nn->layers[0]->number_of_neurons, mb_cached);
+
+        one2 = alloc_matrix(mb_cached, 1);
+        for (unsigned i = 0; i < one2->rows * one2->columns; ++i) one2->m[i] = 1.0;
+    }
+
+    /* --- δ^L -------------------------------------------------------------- */
+    matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta);
+    matrix_function(nn->layers[L]->z, df, dfz[L]);
+    hadamard_product(nn->layers[L]->delta, dfz[L], nn->layers[L]->delta);
+
+    /* --- layers L .. 1 ---------------------------------------------------- */
+    for (int l = L; l > 0; --l) {
+        /* ∇Wᶫ : delta^l × (a^{l-1})ᵀ   ------------------------------------ */
+        matrix_transpose(nn->layers[l-1]->activations, ta[l]);
+        matrix_dot(nn->layers[l]->delta, ta[l], w1[l]);
+        matrix_scalar(w1[l], nn->alpha / mb_cached, w1[l]);
+        matrix_minus(nn->layers[l]->weights, w1[l], nn->layers[l]->weights);
+
+        /* ∇bᶫ : delta^l × 1 ---------------------------------------------- */
+        matrix_dot(nn->layers[l]->delta, one2, b1[l]);
+        matrix_scalar(b1[l], nn->alpha / mb_cached, b1[l]);
+        matrix_minus(nn->layers[l]->biases, b1[l], nn->layers[l]->biases);
+
+        if (l > 1) {
+            /* δ^{l-1} ------------------------------------------------------ */
+            matrix_transpose(nn->layers[l]->weights, tw[l]);
+            matrix_dot(tw[l], nn->layers[l]->delta, delta_tmp[l]);
+            matrix_function(nn->layers[l-1]->z, df, dfz[l-1]);
+            hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
+        }
     }
 }
 
-void backward(ann_t *nn, matrix_t *y, double (*derivative_actfunct)(double))
-{
-    unsigned L = nn->number_of_layers-1;
-
-    matrix_t *dfzL = alloc_matrix(nn->layers[L]->number_of_neurons, nn->minibatch_size);
-
-    matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta);  // delta^(L) = (a^L - y)
-    matrix_function(nn->layers[L]->z, derivative_actfunct, dfzL); // f'(z^(L))
-    hadamard_product(nn->layers[L]->delta, dfzL, nn->layers[L]->delta); // delta^(L) = (a^L - y) o f'(z^(L))
-
-    destroy_matrix(dfzL);
-
-    for (int l = L; l > 1; l--)
-    {
-        matrix_t *tw, *delta_tmp, *dfz;
-        tw = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->layers[l]->number_of_neurons);
-        delta_tmp = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->minibatch_size);
-        dfz = alloc_matrix(nn->layers[l-1]->number_of_neurons, nn->minibatch_size);
-
-        matrix_transpose(nn->layers[l]->weights, tw); // (w^l)T        
-        matrix_dot(tw, nn->layers[l]->delta, delta_tmp); // (w^l)T x delta^l
-        matrix_function(nn->layers[l-1]->z, derivative_actfunct, dfz); // f'(z^(l-1))
-        hadamard_product(delta_tmp, dfz, nn->layers[l-1]->delta); // delta^(l-1) = (w^l)T x delta^l o f'(z^(l-1))
-
-        destroy_matrix(tw);
-        destroy_matrix(delta_tmp);
-        destroy_matrix(dfz);
-    }
-
-    for (int l = 1; l < nn->number_of_layers; l++)
-    {
-        matrix_t *w1, *ta;
-        w1 = alloc_matrix(nn->layers[l]->number_of_neurons, nn->layers[l-1]->number_of_neurons);
-        ta = alloc_matrix(nn->minibatch_size, nn->layers[l-1]->number_of_neurons);
-        
-        matrix_transpose(nn->layers[l-1]->activations, ta); // ta <- (a^(l-1))^T
-        matrix_dot(nn->layers[l]->delta, ta, w1); // w1 <- delta^l x (a^(l-1))^T
-        matrix_scalar(w1, nn->alpha / nn->minibatch_size, w1); // w1 <- alpha /m . delta^l x (a^(l-1))^T
-        matrix_minus(nn->layers[l]->weights, w1, nn->layers[l]->weights); // w^l <- w^l - alpha /m . delta^l x (a^(l-1))^T
-
-        destroy_matrix(w1);
-        destroy_matrix(ta);
-
-        matrix_t *one, *b1;
-        b1 = alloc_matrix(nn->layers[l]->number_of_neurons, 1);
-        one = alloc_matrix(nn->minibatch_size, 1);
-        for (int idx = 0; idx < one->columns*one->rows; idx++)
-            one->m[idx] = 1.0;
-
-        matrix_dot(nn->layers[l]->delta, one, b1); // b1 <- delta^l x 1^T
-        matrix_scalar(b1,  nn->alpha / nn->minibatch_size, b1); // b1 <- alpha / m . delta^l x 1^T
-        matrix_minus(nn->layers[l]->biases, b1, nn->layers[l]->biases); // b^l = b^l - alpha / m . delta^l x 1^T
-        
-        destroy_matrix(one);
-        destroy_matrix(b1);
-    }
-}
+ 
