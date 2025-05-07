@@ -16,8 +16,8 @@ double normalRand(double mu, double sigma)
 {
 	const double epsilon = DBL_MIN;
 	const double two_pi = 2.0*M_PI;
-    bool generate;
-    double z1;
+    static bool generate = false;
+    static double z1;
 
 	generate = !generate;
 
@@ -125,7 +125,7 @@ void print_nn(ann_t *nn)
 *       one    : vector of 1 used for bias broadcast
 * ============================================================================
 */
-void forward(ann_t *nn, double (*act)(double)) {
+void forward(ann_t *nn) {
     /* persistent scratch : one, z1, z2 ------------------------------------ */
     static matrix_t **z1 = nullptr, **z2 = nullptr;
     static matrix_t  *one1 = nullptr;            // 1 × m (bias broadcast)
@@ -162,7 +162,7 @@ void forward(ann_t *nn, double (*act)(double)) {
         matrix_dot(nn->layers[l]->weights, nn->layers[l-1]->activations, z1[l]);
         matrix_dot(nn->layers[l]->biases,  one1,                         z2[l]);
         matrix_sum(z1[l], z2[l], nn->layers[l]->z);
-        matrix_function(nn->layers[l]->z, act, nn->layers[l]->activations);
+        matrix_function(nn->layers[l]->z, nn->layers[l]->activations, false);
     }
 }
  
@@ -177,7 +177,7 @@ void forward(ann_t *nn, double (*act)(double)) {
 *       one          : vector of 1 for bias reduction
 * ============================================================================
 */
-void backward(ann_t *nn, matrix_t *y, double (*df)(double))
+void backward(ann_t *nn, matrix_t *y)
 {
     const unsigned L = nn->number_of_layers - 1;
 
@@ -234,7 +234,7 @@ void backward(ann_t *nn, matrix_t *y, double (*df)(double))
 
     /* --- δ^L -------------------------------------------------------------- */
     matrix_minus(nn->layers[L]->activations, y, nn->layers[L]->delta);
-    matrix_function(nn->layers[L]->z, df, dfz[L]);
+    matrix_function(nn->layers[L]->z, dfz[L], true);
     hadamard_product(nn->layers[L]->delta, dfz[L], nn->layers[L]->delta);
 
     /* --- layers L .. 1 ---------------------------------------------------- */
@@ -254,7 +254,7 @@ void backward(ann_t *nn, matrix_t *y, double (*df)(double))
             /* δ^{l-1} ------------------------------------------------------ */
             matrix_transpose(nn->layers[l]->weights, tw[l]);
             matrix_dot(tw[l], nn->layers[l]->delta, delta_tmp[l]);
-            matrix_function(nn->layers[l-1]->z, df, dfz[l-1]);
+            matrix_function(nn->layers[l-1]->z, dfz[l-1], true);
             hadamard_product(delta_tmp[l], dfz[l-1], nn->layers[l-1]->delta);
         }
     }

@@ -188,32 +188,85 @@ void matrix_dot(matrix_t* m1, matrix_t* m2, matrix_t* res)
         m1->m, m2->m, res->m,
         m1->rows, m1->columns, m2->columns);
 
-    cudaDeviceSynchronize();       // indispensable avec la mémoire unifiée :contentReference[oaicite:5]{index=5}
+    cudaDeviceSynchronize();       // indispensable avec la mémoire unifiée
 }
 
-void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
+__device__
+double sigmoid(double x)
 {
-    assert ( (m1->columns == res->columns) &&             
-             (m1->rows == res->rows));
+    return 1.0 / (1.0 + exp(-x));
+}
 
-    for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
+__device__
+double dsigmoid(double x)
+{
+    return sigmoid(x) * (1.0 - sigmoid(x));
+}
+
+__global__
+void matrix_function_kernel(double* in, double* out, int size, bool derivative)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
     {
-        res->m[idx] = f(m1->m[idx]);
+        if (derivative)
+            out[idx] = dsigmoid(in[idx]);
+        else
+            out[idx] = sigmoid(in[idx]);
+    }
+}
+
+void matrix_function(matrix_t *m1, matrix_t *res, bool derivative)
+{
+    assert((m1->columns == res->columns) &&
+           (m1->rows == res->rows));
+
+    int size = m1->rows * m1->columns;
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+
+    matrix_function_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+        m1->m, res->m, size, derivative
+    );
+
+    cudaDeviceSynchronize();
+}
+
+// void matrix_function(matrix_t *m1, double (*f)(double), matrix_t *res)
+// {
+//     assert ( (m1->columns == res->columns) &&             
+//              (m1->rows == res->rows));
+
+//     for (int idx = 0; idx < m1->rows * m1->columns; idx ++)
+//     {
+//         res->m[idx] = f(m1->m[idx]);
+//     }
+// }
+
+__global__
+void matrix_transpose_kernel(const double* in, double* out, int rows, int cols) {
+    int in_row = blockIdx.y * blockDim.y + threadIdx.y;
+    int in_col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (in_row < rows && in_col < cols) {
+        int in_idx  = in_col + in_row * cols;
+        int out_idx = in_row + in_col * rows;
+        out[out_idx] = in[in_idx];
     }
 }
 
 void matrix_transpose(matrix_t *m1, matrix_t *res)
 {
-    assert ( (m1->columns == res->rows) &&             
-             (m1->rows == res->columns));
-    
-    for (int row = 0; row < m1->rows; row++)
-    {
-        for (int col = 0; col < m1->columns; col ++)
-        {
-            res->m[row + col * m1->rows] = m1->m[col + row * m1->columns];
-        }
-    }
+    assert((m1->columns == res->rows) &&
+           (m1->rows == res->columns));
+
+    dim3 blockDim(16, 16);
+    dim3 gridDim((m1->columns + 15) / 16, (m1->rows + 15) / 16);
+
+    matrix_transpose_kernel<<<gridDim, blockDim>>>(
+        m1->m, res->m, m1->rows, m1->columns
+    );
+    cudaDeviceSynchronize();
 }
 
 __global__
